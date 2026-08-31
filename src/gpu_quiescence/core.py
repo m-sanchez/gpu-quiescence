@@ -66,6 +66,13 @@ class Handshake:
 
     def run(self) -> ReadinessReport:
         report = ReadinessReport(ok=True, started_at=time.time())
+        if not self.stages:
+            # a gate with nothing to test has tested nothing
+            report.ok = False
+            report.stages.append(
+                StageReport(name="handshake", ok=False, duration_s=0.0, detail="no stages configured; nothing was tested")
+            )
+            return report
         for stage in self.stages:
             t0 = time.monotonic()
             try:
@@ -85,23 +92,53 @@ class Handshake:
 
 
 class EvictStage:
-    """Ask the inference server to release what it holds."""
+    """Ask the inference server to release what it holds.
+
+    Eviction is asynchronous on real servers, so the STAGE owns the wait:
+    settled() is polled against a deadline here, whatever the evictor's own
+    implementation does. A stage that asked once and moved on would hand
+    the settle stage a fight it exists to avoid.
+    """
 
     name = "evict"
 
-    def __init__(self, evictor) -> None:
+    def __init__(
+        self,
+        evictor,
+        deadline_s: float = 30.0,
+        poll_interval_s: float = 1.0,
+        _sleep=time.sleep,
+        _clock=time.monotonic,
+    ) -> None:
         self._evictor = evictor
+        self._deadline = deadline_s
+        self._poll = poll_interval_s
+        self._sleep = _sleep
+        self._clock = _clock
 
     def run(self) -> StageReport:
-        t0 = time.monotonic()
+        t0 = self._clock()
         self._evictor.evict()
-        settled = self._evictor.settled()
-        return StageReport(
-            name=self.name,
-            ok=settled,
-            duration_s=time.monotonic() - t0,
-            detail="server reports nothing loaded" if settled else "server still holds models",
-        )
+        polls = 0
+        while True:
+            polls += 1
+            if self._evictor.settled():
+                return StageReport(
+                    name=self.name,
+                    ok=True,
+                    duration_s=self._clock() - t0,
+                    observations={"polls": polls},
+                    detail="server reports nothing loaded",
+                )
+            if self._clock() - t0 >= self._deadline:
+                return StageReport(
+                    name=self.name,
+                    ok=False,
+                    duration_s=self._clock() - t0,
+                    observations={"polls": polls},
+                    detail=f"server still holds models after {self._deadline:.0f}s of polling",
+                )
+            self._sleep(self._poll)
 
 
 class SettleStage:
@@ -124,6 +161,11 @@ class SettleStage:
         _sleep=time.sleep,
         _clock=time.monotonic,
     ) -> None:
+        if timeout_s < window * interval_s:
+            raise ValueError(
+                f"timeout_s={timeout_s} cannot fit {window} samples at {interval_s}s; "
+                "this stage would fail forever without ever being able to succeed"
+            )
         self._probe = probe
         self._band = band_mib
         self._window = window
@@ -164,9 +206,18 @@ class SettleStage:
 class ProbeStage:
     """Allocate, touch, and release one representative buffer.
 
-    Success claims exactly what happened: an allocation of `size_mib`
-    succeeded at that moment. Free-before and free-after are recorded as
-    observations, and no conclusion is drawn from them.
+    HONESTY FIRST: the default allocator is `bytearray`, which exercises
+    HOST memory. In GPU mode that means the probe proves the host can
+    allocate, while the VRAM readiness signal comes from the settle and
+    headroom stages reading real VRAM numbers. To probe VRAM itself, pass
+    an allocator that actually touches it (for example a torch CUDA tensor
+    factory); the report names the allocator either way, so the record
+    says exactly what was tested.
+
+    Outcomes are three-valued and never disguised: `succeeded`, `refused`
+    (the allocator said no - the expected failure mode), or `errored` (the
+    allocator broke - a programming or environment problem). Both refusals
+    and errors gate the launch; the report tells you which one happened.
     """
 
     name = "probe"
@@ -175,15 +226,27 @@ class ProbeStage:
     MAX_MIB = 1024
     FRACTION = 0.25
 
-    def __init__(self, probe: MemoryProbe, required_mib: float, _alloc=bytearray) -> None:
+    def __init__(
+        self,
+        probe: MemoryProbe,
+        required_mib: float,
+        _alloc=bytearray,
+        allocator_label: str = "host-bytearray",
+    ) -> None:
         self._probe = probe
         self._required = required_mib
         self._alloc = _alloc
+        self.allocator_label = allocator_label
         self.size_mib = int(min(self.MAX_MIB, max(self.MIN_MIB, required_mib * self.FRACTION)))
 
     def run(self) -> StageReport:
         t0 = time.monotonic()
         before = self._probe.free_mib()
+        base = {
+            "size_mib": self.size_mib,
+            "allocator": self.allocator_label,
+            "free_before_mib": round(before, 1),
+        }
         try:
             buf = self._alloc(self.size_mib * 1024 * 1024)
             step = 4096
@@ -195,20 +258,24 @@ class ProbeStage:
                 name=self.name,
                 ok=False,
                 duration_s=time.monotonic() - t0,
-                observations={"size_mib": self.size_mib, "free_before_mib": round(before, 1)},
-                detail=f"an allocation of {self.size_mib} MiB failed",
+                observations={**base, "outcome": "refused"},
+                detail=f"probe refused: an allocation of {self.size_mib} MiB via {self.allocator_label} failed",
+            )
+        except Exception as exc:
+            return StageReport(
+                name=self.name,
+                ok=False,
+                duration_s=time.monotonic() - t0,
+                observations={**base, "outcome": "errored"},
+                detail=f"probe errored (not a memory refusal): {exc}",
             )
         after = self._probe.free_mib()
         return StageReport(
             name=self.name,
             ok=True,
             duration_s=time.monotonic() - t0,
-            observations={
-                "size_mib": self.size_mib,
-                "free_before_mib": round(before, 1),
-                "free_after_mib": round(after, 1),
-            },
-            detail=f"an allocation of {self.size_mib} MiB succeeded at {time.strftime('%H:%M:%S')}",
+            observations={**base, "outcome": "succeeded", "free_after_mib": round(after, 1)},
+            detail=f"an allocation of {self.size_mib} MiB via {self.allocator_label} succeeded at {time.strftime('%H:%M:%S')}",
         )
 
 

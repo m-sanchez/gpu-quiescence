@@ -116,7 +116,7 @@ class FakeEvictor:
 
 
 def test_handshake_stops_at_first_failure():
-    bad = EvictStage(FakeEvictor(settles=False))
+    bad = EvictStage(FakeEvictor(settles=False), deadline_s=0.0, _sleep=lambda s: None)
     never_reached = HeadroomStage(ScriptedProbe([10**6]), 1)
     report = Handshake([bad, never_reached]).run()
     assert not report.ok
@@ -148,3 +148,59 @@ def test_full_green_path_reports_every_stage():
     assert report.ok
     assert [s.name for s in report.stages] == ["evict", "settle", "probe", "headroom"]
     assert report.to_dict()["stages"][2]["observations"]["size_mib"] == 250
+
+
+def test_empty_handshake_fails_because_nothing_was_tested():
+    report = Handshake([]).run()
+    assert not report.ok
+    assert "nothing was tested" in report.stages[0].detail
+
+
+def test_settle_rejects_a_timeout_that_can_never_succeed():
+    import pytest
+
+    with pytest.raises(ValueError, match="being able to succeed"):
+        SettleStage(ScriptedProbe([1]), window=5, interval_s=1.0, timeout_s=3.0)
+
+
+def test_evict_stage_polls_until_settled_or_deadline():
+    class SlowEvictor:
+        def __init__(self):
+            self.checks = 0
+
+        def evict(self):
+            pass
+
+        def settled(self):
+            self.checks += 1
+            return self.checks >= 3
+
+        def restore(self, model=None):
+            pass
+
+    clock = FakeClock()
+    ev = SlowEvictor()
+    stage = EvictStage(ev, deadline_s=10.0, poll_interval_s=1.0, _sleep=clock.sleep, _clock=clock.monotonic)
+    r = stage.run()
+    assert r.ok
+    assert r.observations["polls"] == 3
+
+
+def test_probe_distinguishes_refused_from_errored_and_both_gate():
+    def refusing(_n):
+        raise MemoryError
+
+    def exploding(_n):
+        raise RuntimeError("allocator bug")
+
+    refused = ProbeStage(ScriptedProbe([9000]), 1000, _alloc=refusing).run()
+    assert not refused.ok and refused.observations["outcome"] == "refused"
+
+    errored = ProbeStage(ScriptedProbe([9000]), 1000, _alloc=exploding).run()
+    assert not errored.ok and errored.observations["outcome"] == "errored"
+    assert "not a memory refusal" in errored.detail
+
+
+def test_probe_reports_its_allocator_so_the_record_says_what_was_tested():
+    r = ProbeStage(ScriptedProbe([9000, 8900]), 1000).run()
+    assert r.observations["allocator"] == "host-bytearray"

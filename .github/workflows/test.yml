@@ -1,0 +1,26 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e . pytest build
+      - run: pytest -q
+      - name: install proof
+        run: |
+          python -m build --wheel
+          mkdir -p "$RUNNER_TEMP/scratch" && cd "$RUNNER_TEMP/scratch"
+          python -m venv v && . v/bin/activate
+          pip install "$GITHUB_WORKSPACE"/dist/*.whl
+          python -c "import gpu_quiescence; assert gpu_quiescence.Handshake; print('import ok')"
+          gpu-quiescence --help > /dev/null && echo "cli ok"

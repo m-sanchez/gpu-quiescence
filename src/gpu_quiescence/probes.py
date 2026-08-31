@@ -6,6 +6,10 @@ import subprocess
 import sys
 
 
+class UsageError(RuntimeError):
+    """A missing prerequisite is a usage problem, not a 'not ready' verdict."""
+
+
 class SystemMemoryProbe:
     """Free system RAM in MiB, without third-party packages where possible."""
 
@@ -66,7 +70,8 @@ class NvidiaSmiProbe:
         self._run = _run
 
     def free_mib(self) -> float:
-        result = self._run(
+        try:
+            result = self._run(
             [
                 "nvidia-smi",
                 "--query-gpu=memory.free",
@@ -76,6 +81,8 @@ class NvidiaSmiProbe:
             text=True,
             check=True,
         )
+        except FileNotFoundError as exc:
+            raise UsageError("nvidia-smi is not installed or not on PATH; GPU mode needs it") from exc
         lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
         if self._index >= len(lines):
             raise RuntimeError(f"gpu index {self._index} out of range; {len(lines)} gpu(s) reported")

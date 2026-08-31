@@ -16,7 +16,7 @@ import sys
 from .core import EvictStage, Handshake, HeadroomStage, ProbeStage, SettleStage
 from .evictors import OllamaEvictor
 from .launch import run_then_restore
-from .probes import NvidiaSmiProbe, SystemMemoryProbe
+from .probes import NvidiaSmiProbe, SystemMemoryProbe, UsageError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     probe = SystemMemoryProbe() if args.system else NvidiaSmiProbe(args.gpu_index)
+    # Preflight: a missing prerequisite is a usage error (exit 2), never a
+    # "not ready" verdict (exit 1). The two must not share an exit code.
+    try:
+        probe.free_mib()
+    except UsageError as exc:
+        print(f"gpu-quiescence: {exc}", file=sys.stderr)
+        return 2
     evictor = OllamaEvictor(args.ollama) if args.ollama else None
 
     stages = []
