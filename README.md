@@ -8,25 +8,25 @@ shared VRAM.
 One machine, two jobs: an inference server holding models warm, and a
 training run that needs the memory back. Start the trainer cold and it OOMs,
 thrashes, or silently degrades serving. gpu-quiescence runs a handshake
-first — and records precisely what was tested.
+first, and records precisely what was tested.
 
 ```
 evict → settle → probe → headroom → launch (reduced priority) → restore
 ```
 
-- **Evict** — ask the inference server to release its models. Ships an
+- **Evict**: ask the inference server to release its models. Ships an
   Ollama evictor; anything with `evict / settled / restore` plugs in.
-- **Settle** — free memory must sit inside a variation band (spread of the
+- **Settle**: free memory must sit inside a variation band (spread of the
   last five samples under 64 MiB) before any reading is trusted. A reclaim
   still in progress shows up as a wide band and keeps the stage waiting.
-- **Probe** — allocate, touch, and release one representative buffer (25%
-  of the requested footprint, clamped to 128 MiB–1 GiB). Success claims
+- **Probe**: allocate, touch, and release one representative buffer (25%
+  of the requested footprint, clamped to 128 MiB to 1 GiB). Success claims
   exactly what happened: *an allocation of N MiB succeeded at that moment*.
-  Not "memory is contiguous", not "training cannot OOM" — allocator
+  Not "memory is contiguous", not "training cannot OOM": allocator
   behaviour is backend-specific and a probe cannot promise the future.
-- **Headroom** — `free ≥ required × 1.10 + 512 MiB`, both knobs
+- **Headroom**: `free >= required * 1.10 + 512 MiB`, both knobs
   configurable. The numbers go in the report either way.
-- **Launch + restore** — the job runs as a reduced-priority child, and the
+- **Launch + restore**: the job runs as a reduced-priority child, and the
   inference model is re-warmed after it exits, success or not. The box goes
   back to serving either way.
 
