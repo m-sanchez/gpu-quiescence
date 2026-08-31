@@ -1,5 +1,11 @@
 # gpu-quiescence
 
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Dependencies](https://img.shields.io/badge/dependencies-0-B45309)
+![Tests](https://img.shields.io/badge/tests-17_passing-2F6F44)
+![Ollama](https://img.shields.io/badge/evictor-Ollama-6E6E6E)
+![License](https://img.shields.io/badge/license-MIT-6E6E6E)
+
 Train on the box you serve from: an allocation-readiness handshake for
 shared VRAM.
 
