@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-quiescence"
+version = "1.0.0"
+description = "Train on the box you serve from: an allocation-readiness handshake for shared VRAM."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Miguel Sanchez", email = "contact@miguelsanchez.co.uk" }]
+keywords = ["gpu", "vram", "ollama", "fine-tuning", "training", "llm"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/m-sanchez/gpu-quiescence"
+
+[project.scripts]
+gpu-quiescence = "gpu_quiescence.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
