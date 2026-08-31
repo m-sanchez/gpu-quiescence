@@ -51,10 +51,10 @@ Every stage produces a report entry with its observations; a failed stage
 gates the job instead of raising, and an empty handshake fails because
 nothing was tested. `--json` emits the whole readiness report.
 
-## Run
+## Install
 
 ```bash
-pip install -e . && pytest
+pip install "git+https://github.com/m-sanchez/gpu-quiescence@v2.0.0"
 
 # gate a fine-tune on 8 GiB of GPU memory, evicting Ollama first
 gpu-quiescence --require-mib 8192 --gpu \
@@ -62,12 +62,18 @@ gpu-quiescence --require-mib 8192 --gpu \
   -- python train.py
 ```
 
-Exit codes: `0` ready (and the job succeeded, if one was given) · `1` not
-ready, or the job failed · `2` usage error.
+Not yet on PyPI; the pinned git tag is the supported install and CI proves
+the built wheel installs, imports, and exposes the command.
 
-Python 3.10+, zero dependencies. System-RAM mode (`--system`) reads
-`/proc/meminfo` on Linux and `GlobalMemoryStatusEx` on Windows; GPU mode
-parses `nvidia-smi`.
+Exit codes: `0` ready (and the job succeeded, if one was given) · `1` not
+ready, or the job failed · `2` usage error - a missing `nvidia-smi` is a
+usage problem, never a "not ready" verdict.
+
+Python 3.10+, zero runtime dependencies. System-RAM mode (`--system`)
+reads `/proc/meminfo` on Linux and `GlobalMemoryStatusEx` on Windows;
+other platforms need the optional extra
+(`pip install "gpu-quiescence[fallback]"`, which brings psutil). GPU mode
+parses `nvidia-smi`. Develop with `pip install -e . pytest` and `pytest`.
 
 ## Library use
 
