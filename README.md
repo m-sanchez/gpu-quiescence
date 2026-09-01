@@ -5,6 +5,7 @@
 [![CI](https://github.com/m-sanchez/gpu-quiescence/actions/workflows/test.yml/badge.svg)](https://github.com/m-sanchez/gpu-quiescence/actions/workflows/test.yml)
 ![Ollama](https://img.shields.io/badge/evictor-Ollama-6E6E6E)
 ![License](https://img.shields.io/badge/license-MIT-6E6E6E)
+[![PyPI](https://img.shields.io/pypi/v/gpu-quiescence?color=3775A9&logo=pypi&logoColor=white)](https://pypi.org/project/gpu-quiescence/)
 
 > **In plain English:** this checks a GPU really has enough free memory and has settled before you launch a big job, so it does not crash halfway through.
 
@@ -59,7 +60,7 @@ nothing was tested. `--json` emits the whole readiness report.
 ## Install
 
 ```bash
-pip install "git+https://github.com/m-sanchez/gpu-quiescence@v2.0.0"
+pip install gpu-quiescence
 
 # gate a fine-tune on 8 GiB of GPU memory, evicting Ollama first
 gpu-quiescence --require-mib 8192 --gpu \
@@ -67,8 +68,10 @@ gpu-quiescence --require-mib 8192 --gpu \
   -- python train.py
 ```
 
-Not yet on PyPI; the pinned git tag is the supported install and CI proves
-the built wheel installs, imports, and exposes the command.
+Also installable from a pinned git tag: `pip install
+"git+https://github.com/m-sanchez/gpu-quiescence@v2.0.0"`. CI proves the
+built wheel installs, imports, and exposes the command. No required runtime
+dependencies; `psutil` is an optional fallback probe.
 
 Exit codes: `0` ready (and the job succeeded, if one was given) · `1` not
 ready, or the job failed · `2` usage error - a missing `nvidia-smi` is a
