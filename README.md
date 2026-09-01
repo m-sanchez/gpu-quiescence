@@ -6,6 +6,8 @@
 ![Ollama](https://img.shields.io/badge/evictor-Ollama-6E6E6E)
 ![License](https://img.shields.io/badge/license-MIT-6E6E6E)
 
+> **In plain English:** this checks a GPU really has enough free memory and has settled before you launch a big job, so it does not crash halfway through.
+
 Train on the box you serve from: a VRAM readiness preflight for machines
 that serve and train on one GPU.
 
