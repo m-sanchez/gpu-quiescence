@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-quiescence"
-version = "2.0.0"
+version = "3.0.0"
 description = "Train on the box you serve from: a VRAM readiness preflight for machines that serve and train on one GPU."
 readme = "README.md"
 requires-python = ">=3.10"

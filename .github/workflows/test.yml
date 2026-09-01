@@ -5,9 +5,13 @@ on:
   pull_request:
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Windows is a supported platform (ctypes GlobalMemoryStatusEx, the
+    # BELOW_NORMAL_PRIORITY_CLASS launch path), so CI has to actually run there.
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python: ['3.10', '3.13']
     steps:
       - uses: actions/checkout@v5
@@ -17,10 +21,14 @@ jobs:
       - run: pip install -e . pytest build
       - run: pytest -q
       - name: install proof
+        shell: bash
         run: |
           python -m build --wheel
-          mkdir -p "$RUNNER_TEMP/scratch" && cd "$RUNNER_TEMP/scratch"
-          python -m venv v && . v/bin/activate
-          pip install "$GITHUB_WORKSPACE"/dist/*.whl
-          python -c "import gpu_quiescence; assert gpu_quiescence.Handshake; print('import ok')"
-          gpu-quiescence --help > /dev/null && echo "cli ok"
+          VENV="$RUNNER_TEMP/install-proof"
+          python -m venv "$VENV"
+          PY="$VENV/bin/python"
+          CLI="$VENV/bin/gpu-quiescence"
+          if [ ! -f "$PY" ]; then PY="$VENV/Scripts/python.exe"; CLI="$VENV/Scripts/gpu-quiescence.exe"; fi
+          "$PY" -m pip install --quiet dist/*.whl
+          "$PY" -c "import gpu_quiescence; assert gpu_quiescence.Handshake; print('import ok')"
+          "$CLI" --help > /dev/null && echo "cli ok"

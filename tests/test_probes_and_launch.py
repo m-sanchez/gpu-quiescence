@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from gpu_quiescence.launch import run_then_restore
+from gpu_quiescence.launch import launch_low_priority, run_then_restore
 from gpu_quiescence.probes import NvidiaSmiProbe, SystemMemoryProbe
 
 
@@ -58,3 +58,21 @@ def test_probes_name_the_resource_they_read():
     gpu1 = NvidiaSmiProbe(1, _run=fake_run)
     assert gpu1.free_mib() == 2048.0
     assert gpu1.label == "vram:gpu1:GPU-bbbb-2222"
+
+
+def test_the_job_runs_as_a_reduced_priority_child():
+    seen = {}
+
+    class FakeChild:
+        def wait(self):
+            return 0
+
+    def fake_popen(_cmd, **kwargs):
+        seen.update(kwargs)
+        return FakeChild()
+
+    assert launch_low_priority(["anything"], _popen=fake_popen) == 0
+    if sys.platform == "win32":
+        assert seen["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    else:
+        assert seen["preexec_fn"] is not None  # os.nice(10)

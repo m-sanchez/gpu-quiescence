@@ -1,0 +1,50 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # PyPI trusted publishing (OIDC). Configure the publisher on PyPI as:
+    #   owner m-sanchez / repository gpu-quiescence
+    #   workflow release.yml / environment pypi
+    # The environment name below and the one on PyPI must match exactly.
+    environment: pypi
+    permissions:
+      id-token: write  # mint the OIDC token; no long-lived PyPI token exists
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -e . pytest build
+      - name: the tag must match the packaged version
+        run: |
+          python - <<'PY'
+          import os, sys, tomllib
+          tag = os.environ["GITHUB_REF_NAME"]
+          with open("pyproject.toml", "rb") as f:
+              version = tomllib.load(f)["project"]["version"]
+          if tag != f"v{version}":
+              sys.exit(f"tag {tag} does not match pyproject version {version}")
+          print(f"tag {tag} matches pyproject version {version}")
+          PY
+      - run: pytest -q
+      - name: build and prove the wheel installs
+        run: |
+          python -m build
+          VENV="$RUNNER_TEMP/install-proof"
+          python -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --quiet dist/*.whl
+          "$VENV/bin/python" -c "import gpu_quiescence; assert gpu_quiescence.Handshake; print('import ok')"
+          "$VENV/bin/gpu-quiescence" --help > /dev/null && echo "cli ok"
+      - name: publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # PEP 740 provenance: the wheel on PyPI is bound to this repository,
+          # workflow and commit, so an adopter can verify it instead of trusting it.
+          attestations: true
