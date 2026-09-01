@@ -204,3 +204,53 @@ def test_probe_distinguishes_refused_from_errored_and_both_gate():
 def test_probe_reports_its_allocator_so_the_record_says_what_was_tested():
     r = ProbeStage(ScriptedProbe([9000, 8900]), 1000).run()
     assert r.observations["allocator"] == "host-bytearray"
+
+
+class OutOfMemoryError(RuntimeError):
+    """Shaped like torch.cuda.OutOfMemoryError: named OOM, not a MemoryError."""
+
+
+def test_a_cuda_style_oom_is_a_refusal_not_an_allocator_bug():
+    # torch raises OutOfMemoryError(RuntimeError); it is NOT a MemoryError, so a
+    # genuine VRAM refusal used to be reported as "the allocator broke".
+    def refusing(_n):
+        raise OutOfMemoryError(
+            "CUDA out of memory. Tried to allocate 250.00 MiB (GPU 0; 23.65 GiB total capacity)"
+        )
+
+    r = ProbeStage(ScriptedProbe([9000]), 1000, _alloc=refusing).run()
+    assert not r.ok
+    assert r.observations["outcome"] == "refused"
+    assert "not a memory refusal" not in r.detail
+
+
+def test_an_oom_message_from_an_unnamed_exception_is_still_a_refusal():
+    def refusing(_n):
+        raise RuntimeError("HIP out of memory. Tried to allocate 250.00 MiB")
+
+    r = ProbeStage(ScriptedProbe([9000]), 1000, _alloc=refusing).run()
+    assert r.observations["outcome"] == "refused"
+
+
+def test_a_real_allocator_bug_is_still_errored():
+    def exploding(_n):
+        raise RuntimeError("allocator bug")
+
+    r = ProbeStage(ScriptedProbe([9000]), 1000, _alloc=exploding).run()
+    assert r.observations["outcome"] == "errored"
+
+
+def test_refusal_exceptions_are_configurable():
+    class DeviceFull(Exception):
+        pass
+
+    def refusing(_n):
+        raise DeviceFull("no room")
+
+    plain = ProbeStage(ScriptedProbe([9000]), 1000, _alloc=refusing).run()
+    assert plain.observations["outcome"] == "errored"
+
+    taught = ProbeStage(
+        ScriptedProbe([9000]), 1000, _alloc=refusing, refusal_exceptions=(DeviceFull,)
+    ).run()
+    assert taught.observations["outcome"] == "refused"

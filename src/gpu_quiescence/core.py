@@ -9,9 +9,23 @@ known moment - not that the box cannot OOM later.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Protocol
+
+#: Allocators that are not `MemoryError`-based still say "no" in a recognisable
+#: way. torch raises `torch.cuda.OutOfMemoryError(RuntimeError)`; ROCm and a few
+#: vendor runtimes raise plain RuntimeErrors carrying the same sentence. Matching
+#: on shape keeps a genuine refusal from being filed as an allocator bug.
+_OOM_MESSAGE = re.compile(r"out of memory", re.IGNORECASE)
+
+
+def looks_like_a_refusal(exc: BaseException) -> bool:
+    """True when an exception is an allocator saying no rather than breaking."""
+    if type(exc).__name__.endswith("OutOfMemoryError"):
+        return True
+    return bool(_OOM_MESSAGE.search(str(exc)))
 
 
 @dataclass
@@ -203,6 +217,43 @@ class SettleStage:
         )
 
 
+class Allocator(Protocol):
+    """Allocate one buffer, touch it, and clean up once it has been dropped."""
+
+    label: str
+
+    def alloc(self, nbytes: int): ...
+
+    def touch(self, buf) -> None: ...
+
+    def release(self) -> None:
+        """Runs AFTER the stage has dropped its reference to the buffer.
+
+        Runtimes with a caching allocator (torch) only hand memory back to the
+        driver once nothing references the tensor, so this hook runs after the
+        drop - otherwise `free_after_mib` reports a number the driver disagrees
+        with.
+        """
+
+
+class _ByteArrayAllocator:
+    """The default: host memory via `bytearray`, pages touched one per 4 KiB."""
+
+    def __init__(self, alloc=bytearray, label: str = "host-bytearray") -> None:
+        self._alloc = alloc
+        self.label = label
+
+    def alloc(self, nbytes: int):
+        return self._alloc(nbytes)
+
+    def touch(self, buf) -> None:
+        for i in range(0, len(buf), 4096):  # touch pages so the allocation is real
+            buf[i] = 1
+
+    def release(self) -> None:
+        pass  # dropping the last reference is all host memory needs
+
+
 class ProbeStage:
     """Allocate, touch, and release one representative buffer.
 
@@ -232,11 +283,17 @@ class ProbeStage:
         required_mib: float,
         _alloc=bytearray,
         allocator_label: str = "host-bytearray",
+        refusal_exceptions: tuple[type[BaseException], ...] = (MemoryError,),
+        allocator: Allocator | None = None,
     ) -> None:
         self._probe = probe
         self._required = required_mib
+        self._allocator = allocator if allocator is not None else _ByteArrayAllocator(_alloc, allocator_label)
         self._alloc = _alloc
-        self.allocator_label = allocator_label
+        self.allocator_label = getattr(self._allocator, "label", allocator_label)
+        self._refusals = tuple(refusal_exceptions) + tuple(
+            getattr(self._allocator, "refusal_exceptions", ())
+        )
         self.size_mib = int(min(self.MAX_MIB, max(self.MIN_MIB, required_mib * self.FRACTION)))
 
     def run(self) -> StageReport:
@@ -247,27 +304,36 @@ class ProbeStage:
             "allocator": self.allocator_label,
             "free_before_mib": round(before, 1),
         }
+        refused = None
         try:
-            buf = self._alloc(self.size_mib * 1024 * 1024)
-            step = 4096
-            for i in range(0, len(buf), step):  # touch pages so the allocation is real
-                buf[i] = 1
-            del buf
-        except MemoryError:
-            return StageReport(
-                name=self.name,
-                ok=False,
-                duration_s=time.monotonic() - t0,
-                observations={**base, "outcome": "refused"},
-                detail=f"probe refused: an allocation of {self.size_mib} MiB via {self.allocator_label} failed",
-            )
+            buf = self._allocator.alloc(self.size_mib * 1024 * 1024)
+            try:
+                self._allocator.touch(buf)
+            finally:
+                buf = None  # drop the buffer BEFORE the allocator cleans up
+                self._allocator.release()
+        except self._refusals as exc:
+            refused = exc
         except Exception as exc:
+            # An allocator that is not MemoryError-based still has to be heard:
+            # a CUDA OOM is a refusal, and filing it as a bug sends the operator
+            # to debug the allocator instead of freeing memory.
+            if not looks_like_a_refusal(exc):
+                return StageReport(
+                    name=self.name,
+                    ok=False,
+                    duration_s=time.monotonic() - t0,
+                    observations={**base, "outcome": "errored"},
+                    detail=f"probe errored (not a memory refusal): {exc}",
+                )
+            refused = exc
+        if refused is not None:
             return StageReport(
                 name=self.name,
                 ok=False,
                 duration_s=time.monotonic() - t0,
-                observations={**base, "outcome": "errored"},
-                detail=f"probe errored (not a memory refusal): {exc}",
+                observations={**base, "outcome": "refused", "refusal": type(refused).__name__},
+                detail=f"probe refused: an allocation of {self.size_mib} MiB via {self.allocator_label} failed",
             )
         after = self._probe.free_mib()
         return StageReport(
