@@ -43,6 +43,13 @@ def build_parser() -> argparse.ArgumentParser:
         '(needs the torch extra: pip install "gpu-quiescence[torch]")',
     )
     p.add_argument("--band-mib", type=float, default=64.0, help="settle band width (default 64)")
+    p.add_argument(
+        "--reclaim-fraction",
+        type=float,
+        default=0.9,
+        help="fraction of the VRAM the server said it held that must actually "
+        "come back after eviction (default 0.9; 0 disables the check)",
+    )
     p.add_argument("--headroom-factor", type=float, default=1.10)
     p.add_argument("--headroom-margin-mib", type=float, default=512.0)
     p.add_argument("--json", action="store_true", help="emit the readiness report as JSON")
@@ -75,7 +82,15 @@ def main(argv: list[str] | None = None) -> int:
 
     stages = []
     if evictor:
-        stages.append(EvictStage(evictor))
+        # Certify the reclaim in bytes only when the probe reads the same pool
+        # the server reports holding; in --system mode it does not.
+        stages.append(
+            EvictStage(
+                evictor,
+                probe=None if args.system else probe,
+                reclaim_fraction=args.reclaim_fraction,
+            )
+        )
     stages.append(SettleStage(probe, band_mib=args.band_mib))
     stages.append(ProbeStage(probe, args.require_mib, allocator=allocator))
     stages.append(

@@ -3,7 +3,6 @@ import sys
 
 import pytest
 
-from gpu_quiescence.evictors import OllamaEvictor
 from gpu_quiescence.launch import run_then_restore
 from gpu_quiescence.probes import NvidiaSmiProbe, SystemMemoryProbe
 
@@ -29,25 +28,6 @@ def test_nvidia_probe_rejects_out_of_range_index():
 def test_system_probe_reads_this_platform():
     free = SystemMemoryProbe().free_mib()
     assert free > 0
-
-
-def test_ollama_evictor_settled_polls_until_empty(monkeypatch):
-    ev = OllamaEvictor(_sleep=lambda _s: None, _clock=lambda: 0.0)
-    responses = [["m1"], ["m1"], []]
-    monkeypatch.setattr(ev, "loaded_models", lambda: responses.pop(0))
-    assert ev.settled()
-
-
-def test_ollama_evictor_settled_times_out(monkeypatch):
-    t = {"now": 0.0}
-
-    def clock():
-        t["now"] += 30.0
-        return t["now"]
-
-    ev = OllamaEvictor(timeout_s=20.0, _sleep=lambda _s: None, _clock=clock)
-    monkeypatch.setattr(ev, "loaded_models", lambda: ["stuck"])
-    assert not ev.settled()
 
 
 class RecordingEvictor:

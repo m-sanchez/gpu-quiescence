@@ -1,18 +1,31 @@
 """Evictors: ask an inference server to release memory, and restore it after.
 
 An evictor implements three verbs: evict() asks the server to let go,
-settled() answers whether it has, restore() brings a model back once the
-training job finishes. Anything with those verbs plugs into EvictStage.
+settled() answers whether it has *right now*, restore() brings a model back
+once the training job finishes. Anything with those verbs plugs into
+EvictStage.
+
+settled() is a predicate, not a wait: the stage owns the deadline. Two
+components polling against two deadlines is how a report comes to state a
+time nobody waited.
 """
 
 from __future__ import annotations
 
 import json
-import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 from .errors import UsageError
+
+
+@dataclass(frozen=True)
+class LoadedModel:
+    """One model the server is holding, and the VRAM it says it occupies."""
+
+    name: str
+    size_vram_mib: float
 
 
 class OllamaEvictor:
@@ -22,15 +35,9 @@ class OllamaEvictor:
         self,
         base_url: str = "http://127.0.0.1:11434",
         timeout_s: float = 20.0,
-        poll_interval_s: float = 1.0,
-        _sleep=time.sleep,
-        _clock=time.monotonic,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self._timeout = timeout_s
-        self._poll = poll_interval_s
-        self._sleep = _sleep
-        self._clock = _clock
+        self._timeout = timeout_s  # per-request HTTP timeout, not a poll budget
 
     def _open(self, req) -> bytes:
         """Every failure to reach the server is a usage error, not a verdict.
@@ -64,23 +71,33 @@ class OllamaEvictor:
         )
         self._open(req)
 
-    def loaded_models(self) -> list[str]:
-        return [m.get("name", "") for m in self._get("/api/ps").get("models", [])]
+    def loaded_models(self) -> list[LoadedModel]:
+        """What the server says it holds - with the bytes, not just the names.
+
+        The byte count is the whole point: it is what turns "the server says
+        it unloaded" into something the stage can check against the driver.
+        """
+        models = []
+        for m in self._get("/api/ps").get("models", []):
+            try:
+                vram = float(m.get("size_vram") or 0) / (1024 * 1024)
+            except (TypeError, ValueError):
+                vram = 0.0
+            models.append(LoadedModel(name=m.get("name", ""), size_vram_mib=vram))
+        return models
+
+    def held_vram_mib(self) -> float:
+        """Total VRAM the server currently claims to be holding, in MiB."""
+        return sum(m.size_vram_mib for m in self.loaded_models())
 
     def evict(self) -> None:
         """Ask Ollama to drop every loaded model (keep_alive: 0)."""
-        for name in self.loaded_models():
-            self._post("/api/generate", {"model": name, "keep_alive": 0, "prompt": ""})
+        for model in self.loaded_models():
+            self._post("/api/generate", {"model": model.name, "keep_alive": 0, "prompt": ""})
 
     def settled(self) -> bool:
-        """Poll until the server reports nothing loaded, within the timeout."""
-        deadline = self._clock() + self._timeout
-        while True:
-            if not self.loaded_models():
-                return True
-            if self._clock() >= deadline:
-                return False
-            self._sleep(self._poll)
+        """Does the server report nothing loaded right now? One question, one answer."""
+        return not self.loaded_models()
 
     def restore(self, model: str | None = None) -> None:
         """Re-warm one model so the first real request does not pay the load."""

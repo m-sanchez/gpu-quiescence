@@ -147,12 +147,18 @@ class Handshake:
 
 
 class EvictStage:
-    """Ask the inference server to release what it holds.
+    """Ask the inference server to release what it holds, then check the bytes.
 
     Eviction is asynchronous on real servers, so the STAGE owns the wait:
-    settled() is polled against a deadline here, whatever the evictor's own
-    implementation does. A stage that asked once and moved on would hand
-    the settle stage a fight it exists to avoid.
+    settled() is a predicate and this loop is the only deadline. One poll is
+    one question to the server, and the report says how long it actually
+    waited - not how long it was allowed to.
+
+    Given a probe and an evictor that can say how much VRAM it holds, the
+    stage certifies the reclaim in bytes: free memory must rise by at least
+    `reclaim_fraction` of what the server said it was holding. "/api/ps is
+    empty" is the server's claim; the delta is the measurement. Without a
+    probe the stage reports only what it saw.
     """
 
     name = "evict"
@@ -162,38 +168,91 @@ class EvictStage:
         evictor,
         deadline_s: float = 30.0,
         poll_interval_s: float = 1.0,
+        probe: MemoryProbe | None = None,
+        reclaim_fraction: float = 0.9,
         _sleep=time.sleep,
         _clock=time.monotonic,
     ) -> None:
         self._evictor = evictor
         self._deadline = deadline_s
         self._poll = poll_interval_s
+        self._probe = probe
+        self._fraction = reclaim_fraction
         self._sleep = _sleep
         self._clock = _clock
 
+    def _held_vram_mib(self) -> float | None:
+        if self._probe is None:
+            return None
+        held = getattr(self._evictor, "held_vram_mib", None)
+        return None if held is None else float(held())
+
     def run(self) -> StageReport:
         t0 = self._clock()
+        free_before = None if self._probe is None else self._probe.free_mib()
+        held_before = self._held_vram_mib()
         self._evictor.evict()
         polls = 0
         while True:
             polls += 1
             if self._evictor.settled():
-                return StageReport(
-                    name=self.name,
-                    ok=True,
-                    duration_s=self._clock() - t0,
-                    observations={"polls": polls},
-                    detail="server reports nothing loaded",
-                )
-            if self._clock() - t0 >= self._deadline:
+                return self._certify(self._clock() - t0, polls, free_before, held_before)
+            waited = self._clock() - t0
+            if waited >= self._deadline:
                 return StageReport(
                     name=self.name,
                     ok=False,
-                    duration_s=self._clock() - t0,
-                    observations={"polls": polls},
-                    detail=f"server still holds models after {self._deadline:.0f}s of polling",
+                    duration_s=waited,
+                    observations={"polls": polls, "waited_s": round(waited, 1)},
+                    detail=f"server still holds models after {waited:.0f}s of polling",
                 )
             self._sleep(self._poll)
+
+    def _certify(self, waited, polls, free_before, held_before) -> StageReport:
+        observations: dict[str, float | int | str] = {
+            "polls": polls,
+            "waited_s": round(waited, 1),
+        }
+        if free_before is None or not held_before:
+            return StageReport(
+                name=self.name,
+                ok=True,
+                duration_s=waited,
+                observations=observations,
+                detail=f"server reports nothing loaded after {waited:.0f}s",
+            )
+        free_after = self._probe.free_mib()
+        reclaimed = free_after - free_before
+        observations.update(
+            {
+                "source": probe_label(self._probe),
+                "free_before_mib": round(free_before, 1),
+                "free_after_mib": round(free_after, 1),
+                "held_vram_mib": round(held_before, 1),
+                "reclaimed_mib": round(reclaimed, 1),
+            }
+        )
+        if self._fraction > 0 and reclaimed < held_before * self._fraction:
+            return StageReport(
+                name=self.name,
+                ok=False,
+                duration_s=waited,
+                observations=observations,
+                detail=(
+                    f"server reports nothing loaded, but only {reclaimed:.0f} MiB of the "
+                    f"{held_before:.0f} MiB it held came back after {waited:.0f}s"
+                ),
+            )
+        return StageReport(
+            name=self.name,
+            ok=True,
+            duration_s=waited,
+            observations=observations,
+            detail=(
+                f"server released {reclaimed:.0f} MiB of the {held_before:.0f} MiB "
+                f"it held, after {waited:.0f}s"
+            ),
+        )
 
 
 class SettleStage:

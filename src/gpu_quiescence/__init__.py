@@ -11,7 +11,7 @@ from .core import (
     StageReport,
 )
 from .errors import UsageError
-from .evictors import OllamaEvictor
+from .evictors import LoadedModel, OllamaEvictor
 from .launch import launch_low_priority, run_then_restore
 from .probes import NvidiaSmiProbe, SystemMemoryProbe
 
@@ -19,6 +19,7 @@ __all__ = [
     "EvictStage",
     "Handshake",
     "HeadroomStage",
+    "LoadedModel",
     "NvidiaSmiProbe",
     "OllamaEvictor",
     "ProbeStage",
