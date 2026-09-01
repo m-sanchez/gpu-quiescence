@@ -13,6 +13,9 @@ that serve and train on one GPU.
 
 [More tools](https://github.com/m-sanchez) · [Working rules](https://miguelsanchez.co.uk/ethics)
 
+*Provenance: this came out of one body of production LLM work, extracted and
+generalised into a standalone package. First published 2026-08-31.*
+
 One machine, two jobs: an inference server holding models warm, and a
 training run that needs the memory back. Start the trainer cold and it OOMs,
 thrashes, or silently degrades serving. gpu-quiescence runs a preflight
