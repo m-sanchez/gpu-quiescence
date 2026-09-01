@@ -15,6 +15,7 @@ dependencies = []
 
 [project.optional-dependencies]
 fallback = ["psutil"]
+torch = ["torch"]
 
 [project.urls]
 Homepage = "https://github.com/m-sanchez/gpu-quiescence"
