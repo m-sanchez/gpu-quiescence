@@ -102,6 +102,11 @@ class NvidiaSmiProbe:
             )
         except FileNotFoundError as exc:
             raise UsageError("nvidia-smi is not installed or not on PATH; GPU mode needs it") from exc
+        except subprocess.CalledProcessError as exc:
+            # A driver that will not answer is a usage problem: the tool could
+            # not measure, so it has no opinion on whether the box is ready.
+            said = (exc.stderr or exc.output or "").strip() or f"exit status {exc.returncode}"
+            raise UsageError(f"nvidia-smi failed: {said}") from exc
         rows: dict[int, tuple[str, str]] = {}
         for line in result.stdout.splitlines():
             parts = [c.strip() for c in line.split(",")]
@@ -120,4 +125,13 @@ class NvidiaSmiProbe:
 
     def free_mib(self) -> float:
         _uuid, free = self._query()
-        return float(free)
+        try:
+            return float(free)
+        except ValueError as exc:
+            # MIG and vGPU devices answer memory.free with [N/A] or
+            # [Not Supported]. Guessing a number here would be worse than
+            # refusing to run.
+            raise UsageError(
+                f"nvidia-smi reported memory.free as {free!r} for gpu {self._index}; "
+                "this device does not expose per-device free memory (MIG or vGPU)"
+            ) from exc

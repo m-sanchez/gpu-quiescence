@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from .errors import UsageError
+
 #: Allocators that are not `MemoryError`-based still say "no" in a recognisable
 #: way. torch raises `torch.cuda.OutOfMemoryError(RuntimeError)`; ROCm and a few
 #: vendor runtimes raise plain RuntimeErrors carrying the same sentence. Matching
@@ -126,6 +128,10 @@ class Handshake:
             t0 = time.monotonic()
             try:
                 result = stage.run()
+            except UsageError:
+                # NOT a verdict. The gate could not run, so it must not answer
+                # "not ready"; the caller turns this into exit 2.
+                raise
             except Exception as exc:  # a gate must report, never raise past itself
                 result = StageReport(
                     name=stage.name,

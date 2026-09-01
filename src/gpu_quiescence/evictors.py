@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
+
+from .errors import UsageError
 
 
 class OllamaEvictor:
@@ -29,9 +32,28 @@ class OllamaEvictor:
         self._sleep = _sleep
         self._clock = _clock
 
+    def _open(self, req) -> bytes:
+        """Every failure to reach the server is a usage error, not a verdict.
+
+        A typo in --ollama must not come back as "the box is not ready": the
+        handshake never ran, so it has nothing to report.
+        """
+        url = req if isinstance(req, str) else req.full_url
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            raise UsageError(f"{url} answered HTTP {exc.code} {exc.reason}") from exc
+        except OSError as exc:  # URLError, timeouts, DNS, connection refused
+            raise UsageError(f"cannot reach the inference server at {url}: {exc}") from exc
+
     def _get(self, path: str) -> dict:
-        with urllib.request.urlopen(f"{self.base_url}{path}", timeout=self._timeout) as resp:
-            return json.load(resp)
+        url = f"{self.base_url}{path}"
+        raw = self._open(url)
+        try:
+            return json.loads(raw)
+        except ValueError as exc:  # includes json.JSONDecodeError
+            raise UsageError(f"{url} did not answer with JSON; is this an Ollama server?") from exc
 
     def _post(self, path: str, payload: dict) -> None:
         req = urllib.request.Request(
@@ -40,8 +62,7 @@ class OllamaEvictor:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self._timeout):
-            pass
+        self._open(req)
 
     def loaded_models(self) -> list[str]:
         return [m.get("name", "") for m in self._get("/api/ps").get("models", [])]

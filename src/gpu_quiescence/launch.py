@@ -11,6 +11,8 @@ import os
 import subprocess
 import sys
 
+from .errors import UsageError
+
 
 def launch_low_priority(cmd: list[str], _popen=subprocess.Popen) -> int:
     """Run `cmd` as a reduced-priority child; return its exit code."""
@@ -19,7 +21,12 @@ def launch_low_priority(cmd: list[str], _popen=subprocess.Popen) -> int:
         kwargs["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
     else:
         kwargs["preexec_fn"] = lambda: os.nice(10)
-    child = _popen(cmd, **kwargs)
+    try:
+        child = _popen(cmd, **kwargs)
+    except OSError as exc:
+        # A command that does not exist is a typo, not a busy GPU. Without this
+        # the operator reads a green handshake followed by a traceback.
+        raise UsageError(f"cannot run {cmd[0]!r}: {exc}") from exc
     return child.wait()
 
 
