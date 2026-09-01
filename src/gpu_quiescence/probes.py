@@ -5,13 +5,15 @@ from __future__ import annotations
 import subprocess
 import sys
 
+from .errors import UsageError
 
-class UsageError(RuntimeError):
-    """A missing prerequisite is a usage problem, not a 'not ready' verdict."""
+__all__ = ["NvidiaSmiProbe", "SystemMemoryProbe", "UsageError"]
 
 
 class SystemMemoryProbe:
     """Free system RAM in MiB, without third-party packages where possible."""
+
+    label = "system-ram"
 
     def free_mib(self) -> float:
         if sys.platform.startswith("linux"):
@@ -63,27 +65,59 @@ class SystemMemoryProbe:
 
 
 class NvidiaSmiProbe:
-    """Free VRAM in MiB for one GPU, read through nvidia-smi."""
+    """Free VRAM in MiB for one GPU, read through nvidia-smi.
+
+    The query carries the device UUID as well as the free bytes, so a stored
+    report identifies the physical card and not only a position in nvidia-smi
+    PCI enumeration order.
+    """
 
     def __init__(self, gpu_index: int = 0, _run=subprocess.run) -> None:
         self._index = gpu_index
         self._run = _run
+        self._uuid = ""
 
-    def free_mib(self) -> float:
+    @property
+    def label(self) -> str:
+        """vram:gpu<index>:GPU-<uuid> once the device has been read."""
+        if not self._uuid:
+            try:
+                self._query()
+            except Exception:
+                # Naming the resource must never be the thing that fails a run.
+                return f"vram:gpu{self._index}"
+        return f"vram:gpu{self._index}:{self._uuid}" if self._uuid else f"vram:gpu{self._index}"
+
+    def _query(self) -> tuple[str, str]:
         try:
             result = self._run(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,uuid,memory.free",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
         except FileNotFoundError as exc:
             raise UsageError("nvidia-smi is not installed or not on PATH; GPU mode needs it") from exc
-        lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
-        if self._index >= len(lines):
-            raise RuntimeError(f"gpu index {self._index} out of range; {len(lines)} gpu(s) reported")
-        return float(lines[self._index])
+        rows: dict[int, tuple[str, str]] = {}
+        for line in result.stdout.splitlines():
+            parts = [c.strip() for c in line.split(",")]
+            if len(parts) != 3:
+                continue
+            try:
+                index = int(parts[0])
+            except ValueError:
+                continue
+            rows[index] = (parts[1], parts[2])
+        if self._index not in rows:
+            raise RuntimeError(f"gpu index {self._index} out of range; {len(rows)} gpu(s) reported")
+        uuid, free = rows[self._index]
+        self._uuid = uuid
+        return uuid, free
+
+    def free_mib(self) -> float:
+        _uuid, free = self._query()
+        return float(free)

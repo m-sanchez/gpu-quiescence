@@ -9,6 +9,7 @@ known moment - not that the box cannot OOM later.
 
 from __future__ import annotations
 
+import datetime
 import re
 import time
 from dataclasses import dataclass, field
@@ -37,6 +38,19 @@ class StageReport:
     detail: str = ""
 
 
+SCHEMA_VERSION = 1
+
+
+def tool_version() -> str:
+    """The installed distribution version, or "unknown" - never a guess."""
+    try:
+        from importlib.metadata import version
+
+        return version("gpu-quiescence")
+    except Exception:
+        return "unknown"
+
+
 @dataclass
 class ReadinessReport:
     ok: bool
@@ -44,9 +58,20 @@ class ReadinessReport:
     stages: list[StageReport] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        """A stored report has to say what produced it, when, and against what.
+
+        An archived --json record is evidence only if it is self-describing:
+        the envelope names the tool and its version, and every stage stamps
+        the resource it measured.
+        """
+        started = datetime.datetime.fromtimestamp(self.started_at, datetime.timezone.utc)
         return {
+            "schema_version": SCHEMA_VERSION,
+            "tool": "gpu-quiescence",
+            "version": tool_version(),
             "ok": self.ok,
             "started_at": self.started_at,
+            "started_at_iso": started.isoformat(),
             "stages": [
                 {
                     "name": s.name,
@@ -61,9 +86,19 @@ class ReadinessReport:
 
 
 class MemoryProbe(Protocol):
-    """Answers one question: how many MiB are free right now?"""
+    """Answers one question: how many MiB are free right now - and of what?"""
+
+    label: str
 
     def free_mib(self) -> float: ...
+
+
+def probe_label(probe) -> str:
+    """The resource a probe measures, for the record. Never raises."""
+    try:
+        return str(getattr(probe, "label", "") or "unknown")
+    except Exception:
+        return "unknown"
 
 
 class Stage(Protocol):
@@ -202,6 +237,7 @@ class SettleStage:
                     ok=True,
                     duration_s=self._clock() - t0,
                     observations={
+                        "source": probe_label(self._probe),
                         "free_mib": round(recent[-1], 1),
                         "spread_mib": round(spread, 1),
                         "samples": len(samples),
@@ -212,7 +248,7 @@ class SettleStage:
             name=self.name,
             ok=False,
             duration_s=self._clock() - t0,
-            observations={"samples": len(samples)},
+            observations={"source": probe_label(self._probe), "samples": len(samples)},
             detail="free memory never settled; something is still reclaiming or leaking",
         )
 
@@ -300,6 +336,7 @@ class ProbeStage:
         t0 = time.monotonic()
         before = self._probe.free_mib()
         base = {
+            "source": probe_label(self._probe),
             "size_mib": self.size_mib,
             "allocator": self.allocator_label,
             "free_before_mib": round(before, 1),
@@ -372,6 +409,7 @@ class HeadroomStage:
             ok=ok,
             duration_s=time.monotonic() - t0,
             observations={
+                "source": probe_label(self._probe),
                 "free_mib": round(free, 1),
                 "required_mib": round(self._required, 1),
                 "needed_mib": round(needed, 1),

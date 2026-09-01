@@ -13,8 +13,9 @@ from gpu_quiescence.core import (
 class ScriptedProbe:
     """free_mib() returns the next scripted value, repeating the last."""
 
-    def __init__(self, values):
+    def __init__(self, values, label="test-probe"):
         self._values = list(values)
+        self.label = label
 
     def free_mib(self):
         if len(self._values) > 1:
@@ -254,3 +255,27 @@ def test_refusal_exceptions_are_configurable():
         ScriptedProbe([9000]), 1000, _alloc=refusing, refusal_exceptions=(DeviceFull,)
     ).run()
     assert taught.observations["outcome"] == "refused"
+
+
+def test_every_observation_names_the_resource_it_measured():
+    clock = FakeClock()
+    probe = ScriptedProbe([8000, 8001, 8002, 8003, 8004, 8005], label="vram:gpu0:GPU-abc")
+    settled = make_settle(probe, clock).run()
+    assert settled.observations["source"] == "vram:gpu0:GPU-abc"
+    headroom = HeadroomStage(probe, 1000).run()
+    assert headroom.observations["source"] == "vram:gpu0:GPU-abc"
+
+
+def test_the_report_envelope_identifies_the_tool_that_produced_it():
+    envelope = Handshake([HeadroomStage(ScriptedProbe([10**6]), 1)]).run().to_dict()
+    assert envelope["tool"] == "gpu-quiescence"
+    assert envelope["schema_version"] == 1
+    # A stored report names the build that made it, or admits it cannot.
+    try:
+        from importlib.metadata import version
+
+        expected = version("gpu-quiescence")
+    except Exception:
+        expected = "unknown"
+    assert envelope["version"] == expected
+    assert envelope["started_at_iso"].startswith("2")
